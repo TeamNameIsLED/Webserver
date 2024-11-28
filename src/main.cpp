@@ -66,7 +66,6 @@ void processGPSData() {
   }
 }
 
-
 // HTML 페이지 제공
 void handleRoot() {
   server.send(200, "text/html; charset=utf-8", R"rawliteral(
