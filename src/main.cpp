@@ -29,19 +29,30 @@ String geocodedAddress = ""; // 변환된 주소
 // 웹 서버
 WebServer server(80);
 
-// Google Geocoding API 키 (사용자 API 키로 변경)
-const char* GEO_API_KEY = "YOUR_GOOGLE_API_KEY"; // API 키를 여기에 입력
-
 // 주기적 업데이트를 위한 변수
 unsigned long lastUpdateTime = 0;
 const unsigned long updateInterval = 500; // 업데이트 간격 (0.5초)
 
-// AWS Shadow 업데이트 수신 콜백
+/// 수신된 데이터를 저장할 버퍼
+String receivedPayload = "";
+
 void mySubCallBackHandler(char* topicName, int payloadLen, char* payLoad) {
-    strncpy(rcvdPayload, payLoad, payloadLen);
-    rcvdPayload[payloadLen] = 0;
-    msgReceived = 1; // 메시지 수신 플래그 설정
+    Serial.print("Received topic: ");
+    Serial.println(topicName);
+    Serial.print("Partial Payload: ");
+    Serial.println(payLoad);
+
+    // 수신된 데이터를 병합
+    receivedPayload += String(payLoad);
+
+    // JSON 유효성 검사
+    if (receivedPayload.startsWith("{") && receivedPayload.endsWith("}")) {
+        msgReceived = 1; // 메시지 수신 플래그 설정
+    } else {
+        Serial.println("Payload is incomplete, waiting for the rest...");
+    }
 }
+
 
 // GPS 데이터를 JSON 형식으로 생성
 String createGPSDataJSON() {
@@ -64,9 +75,8 @@ void getGeocodedAddress(float latitude, float longitude) {
     if (WiFi.status() == WL_CONNECTED) {
         HTTPClient http;
         String url = "https://maps.googleapis.com/maps/api/geocode/json?latlng=" +
-             String(latitude, 6) + "," + String(longitude, 6) +
-             "&key=" + "AIzaSyDzSZz4EGR_CwxQ5Aa7ncwv85MrQmW_gkI" + "&result_type=street_address&language=ko";
-
+                     String(latitude, 6) + "," + String(longitude, 6) +
+                     "&key=AIzaSyDzSZz4EGR_CwxQ5Aa7ncwv85MrQmW_gkI&result_type=street_address&language=ko";
 
         http.begin(url);
         int httpCode = http.GET();
@@ -74,9 +84,6 @@ void getGeocodedAddress(float latitude, float longitude) {
         if (httpCode == HTTP_CODE_OK) {
             String payload = http.getString();
             Serial.println("Geocoding API 응답: ");
-            Serial.println(payload); // JSON 응답 디버깅 출력
-
-            // JSON 파싱 및 "formatted_address" 추출
             JSONVar jsonResponse = JSON.parse(payload);
             if (JSON.typeof(jsonResponse) == "undefined") {
                 Serial.println("JSON Parsing failed");
@@ -84,7 +91,6 @@ void getGeocodedAddress(float latitude, float longitude) {
                 return;
             }
 
-            // 첫 번째 "formatted_address" 필드 추출
             if (jsonResponse.hasOwnProperty("results") && jsonResponse["results"].length() > 0) {
                 geocodedAddress = (const char*)jsonResponse["results"][0]["formatted_address"];
                 Serial.println("Geocoded Address: " + geocodedAddress);
@@ -103,7 +109,6 @@ void getGeocodedAddress(float latitude, float longitude) {
         geocodedAddress = "Wi-Fi 연결 실패";
     }
 }
-
 
 // GPS 데이터 읽기
 void readGPS() {
@@ -130,6 +135,46 @@ void processGPSData() {
             Serial.println("GPS 신호를 찾을 수 없습니다.");
             geocodedAddress = "GPS 신호 없음";
         }
+    }
+}
+
+// AWS IoT Shadow 데이터 업데이트
+void processAWSData() {
+    if (msgReceived == 1) {
+        msgReceived = 0; // 메시지 수신 플래그 해제
+        JSONVar parsed = JSON.parse(receivedPayload); // 병합된 Payload 파싱
+
+        if (JSON.typeof(parsed) == "undefined") {
+            Serial.println("JSON Parsing failed");
+            receivedPayload = ""; // 버퍼 초기화
+            return;
+        }
+
+        // "reported" 섹션에서 "speed" 값 가져오기
+        if (parsed.hasOwnProperty("state") && parsed["state"].hasOwnProperty("reported")) {
+            JSONVar reported = parsed["state"]["reported"];
+            if (reported.hasOwnProperty("speed")) {
+                awsSpeed = static_cast<float>((double)reported["speed"]);
+                Serial.print("AWS Speed: ");
+                Serial.println(awsSpeed);
+            } else {
+                Serial.println("Speed data not found in reported section");
+            }
+        }
+
+        // "desired" 섹션에서 추가 처리 (필요한 경우)
+        if (parsed.hasOwnProperty("state") && parsed["state"].hasOwnProperty("desired")) {
+            JSONVar desired = parsed["state"]["desired"];
+            // 원하는 작업 추가 가능
+            if (desired.hasOwnProperty("led")) {
+                String ledState = (const char*)desired["led"];
+                Serial.print("Desired LED State: ");
+                Serial.println(ledState);
+            }
+        }
+
+        // 처리 완료 후 버퍼 초기화
+        receivedPayload = "";
     }
 }
 
@@ -196,15 +241,16 @@ void handleRoot() {
 
 // 웹 서버 JSON 데이터 제공
 void handleGPSData() {
-    String json = createGPSDataJSON();
-    server.send(200, "application/json", json);
+    processAWSData(); // AWS 데이터 업데이트
+    String json = createGPSDataJSON(); // 최신 데이터 생성
+    server.send(200, "application/json", json); // JSON 응답 반환
 }
+
 
 void setup() {
     Serial.begin(115200);
     SerialGPS.begin(9600, SERIAL_8N1, 16, 17);
 
-    // Wi-Fi 연결
     WiFi.disconnect(true);
     delay(1000);
     WiFi.mode(WIFI_STA);
@@ -217,8 +263,7 @@ void setup() {
     Serial.println("Wi-Fi 연결 완료");
     Serial.print("ESP32 IP 주소: ");
     Serial.println(WiFi.localIP());
-
-    // AWS IoT 연결
+    delay(1000);
     if (awsIot.connect(HOST_ADDRESS, CLIENT_ID) == 0) {
         Serial.println("AWS IoT에 연결되었습니다");
         delay(1000);
@@ -226,14 +271,11 @@ void setup() {
             Serial.println("Shadow 업데이트 주제 구독 성공");
         } else {
             Serial.println("Shadow 업데이트 주제 구독 실패");
-            while (1);
         }
     } else {
         Serial.println("AWS IoT 연결 실패");
-        while (1);
     }
 
-    // 웹 서버 경로 설정
     server.on("/", handleRoot);
     server.on("/gps-data", handleGPSData);
     server.begin();
@@ -243,5 +285,6 @@ void setup() {
 void loop() {
     readGPS();
     processGPSData();
+    processAWSData(); // AWS 데이터 처리
     server.handleClient();
 }
