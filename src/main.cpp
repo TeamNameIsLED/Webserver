@@ -19,6 +19,8 @@ AWS_IOT awsIot;
 char HOST_ADDRESS[] = "a3pecuomf1y0cd-ats.iot.ap-northeast-2.amazonaws.com";
 char CLIENT_ID[] = "WebServerDevice";
 char SHADOW_UPDATE_DOCUMENTS_TOPIC[] = "$aws/things/ESP32_BIKEASSIST/shadow/update/accepted";
+char TOPIC_ALERTS[] = "esp32/alerts"; // 알림 받는 토픽
+char TOPIC_TELEMETRY[] = "esp32/telemetry"; // 주소, 속도 보내는 토픽 
 
 char rcvdPayload[1024]; // AWS IoT에서 수신한 메시지
 volatile int msgReceived = 0; // 메시지 수신 플래그
@@ -70,7 +72,7 @@ void uploadAddressToAWS() {
         shadowUpdate.toCharArray(shadowUpdateChar, shadowUpdate.length() + 1);
 
         // AWS IoT로 전송
-        int result = awsIot.publish("$aws/things/ESP32_BIKEASSIST/shadow/update", shadowUpdateChar);
+        int result = awsIot.publish("$aws/things/ESP32_BIKEASSIST/shadow/update", shadowUpdateChar); 
         if (result == 0) {
             Serial.println("AWS Shadow updated successfully with GPS data");
         } else {
@@ -79,6 +81,19 @@ void uploadAddressToAWS() {
         }
     } else {
         Serial.println("GPS location is not valid. Skipping upload.");
+    }
+}
+
+// AWS IoT로 텔레메트리 데이터 전송
+void sendTelemetryData(String address, float speed) {
+    char payload[256];
+    snprintf(payload, sizeof(payload), "{\"address\": \"%s\", \"speed\": %.2f}", address.c_str(), speed);
+
+    if (awsIot.publish(TOPIC_TELEMETRY, payload) == 0) {
+        Serial.println("[AWS IoT] Telemetry data sent:");
+        Serial.println(payload);
+    } else {
+        Serial.println("[AWS IoT] Failed to send telemetry data");
     }
 }
 
@@ -101,38 +116,54 @@ void mySubCallBackHandler(char* topicName, int payloadLen, char* payLoad) {
             receivedPayload = ""; // 버퍼 초기화
             return;
         }
-
-        // "reported" 섹션에서 "speed" 값 가져오기
-        if (parsed.hasOwnProperty("state") && parsed["state"].hasOwnProperty("reported")) {
-            JSONVar reported = parsed["state"]["reported"];
-            if (reported.hasOwnProperty("speed")) {
-                awsSpeed = static_cast<float>((double)reported["speed"]);
-                Serial.print("AWS Speed updated: ");
-                Serial.println(awsSpeed);
-            }
-        }
-
-        // "desired" 섹션에서 "led" 상태 확인
-        if (parsed.hasOwnProperty("state") && parsed["state"].hasOwnProperty("desired")) {
-            JSONVar desired = parsed["state"]["desired"];
-            if (desired.hasOwnProperty("led")) {
-                String ledState = (const char*)desired["led"];
-                Serial.print("Desired LED State: ");
-                Serial.println(ledState);
-
-                // LED가 "ON"일 때 주소 정보 업로드
-                if (ledState == "ON") {
-                    uploadAddressToAWS();
+        //Serial.println("첫번째"+ receivedPayload);
+        // Shadow Update 처리
+            
+            // "reported" 섹션에서 "speed" 값 가져오기
+            if (parsed.hasOwnProperty("state") && parsed["state"].hasOwnProperty("reported")) {
+                JSONVar reported = parsed["state"]["reported"];
+                if (reported.hasOwnProperty("speed")) {
+                    awsSpeed = static_cast<float>((double)reported["speed"]);
+                    Serial.print("AWS Speed updated: ");
+                    Serial.println(awsSpeed);
                 }
             }
-        }
 
+            // "desired" 섹션에서 "led" 상태 확인
+            if (parsed.hasOwnProperty("state") && parsed["state"].hasOwnProperty("desired")) {
+                JSONVar desired = parsed["state"]["desired"];
+                if (desired.hasOwnProperty("led")) {
+                    String ledState = (const char*)desired["led"];
+                    Serial.print("Desired LED State: ");
+                    Serial.println(ledState);
+
+                    // LED가 "ON"일 때 주소 정보 업로드
+                    if (ledState == "ON") {
+                        uploadAddressToAWS();
+                    }
+                }
+            }
+        // Alerts 토픽 처리
+        else if (String(topicName) == String(TOPIC_ALERTS)) {
+            Serial.println("Alerts 메시지 수신:");
+            Serial.println(receivedPayload);
+
+            // Alert 메시지에 대한 사용자 정의 작업 수행
+            if (parsed.hasOwnProperty("alert")) {
+                String alertMessage = (const char*)parsed["alert"];
+                Serial.print("Alert 내용: ");
+                Serial.println(alertMessage);
+                // 추가 알림 처리 로직
+            }
+        }
+        //Serial.println("두번째"+ receivedPayload);
         // 처리 완료 후 버퍼 초기화
         receivedPayload = "";
     } else {
         Serial.println("Payload is incomplete, waiting for the rest...");
     }
 }
+
 
 // GPS 데이터를 읽기
 void readGPS() {
@@ -271,15 +302,25 @@ void setup() {
     Serial.println("Wi-Fi 연결 완료");
     Serial.print("ESP32 IP 주소: ");
     Serial.println(WiFi.localIP());
+
     delay(1000);
     if (awsIot.connect(HOST_ADDRESS, CLIENT_ID) == 0) {
         Serial.println("AWS IoT에 연결되었습니다");
         delay(1000);
+        // Shadow Update 토픽 구독
         if (awsIot.subscribe(SHADOW_UPDATE_DOCUMENTS_TOPIC, mySubCallBackHandler) == 0) {
             Serial.println("Shadow 업데이트 주제 구독 성공");
         } else {
             Serial.println("Shadow 업데이트 주제 구독 실패");
         }
+        delay(1000);
+        // Alerts 토픽 구독
+        if (awsIot.subscribe(TOPIC_ALERTS, mySubCallBackHandler) == 0) {
+            Serial.println("Alerts 토픽 구독 성공");
+        } else {
+            Serial.println("Alerts 토픽 구독 실패");
+        }
+        delay(1000);
     } else {
         Serial.println("AWS IoT 연결 실패");
     }
@@ -291,8 +332,7 @@ void setup() {
 }
 
 void loop() {
-    readGPS();
-
+    readGPS();          // GPS 데이터 읽기
     unsigned long currentTime = millis();
     if (gps.location.isValid()) {
         Serial.println("GPS 위치가 유효합니다.");
@@ -305,5 +345,11 @@ void loop() {
         }
     }
 
-    server.handleClient();
+    // 페이로드에서 받은 속도와 주소로 Telemetry 데이터 송신
+    if (!geocodedAddress.isEmpty()) {
+        sendTelemetryData(geocodedAddress, awsSpeed); // AWS에서 받은 속도 활용
+    }
+
+    server.handleClient();  // 웹 서버 클라이언트 처리
 }
+
