@@ -25,34 +25,10 @@ volatile int msgReceived = 0; // 메시지 수신 플래그
 float awsSpeed = 0.0; // AWS에서 수신한 속도 데이터
 
 String geocodedAddress = ""; // 변환된 주소
+String receivedPayload = ""; // 수신된 데이터를 저장할 버퍼
 
 // 웹 서버
 WebServer server(80);
-
-// 주기적 업데이트를 위한 변수
-unsigned long lastUpdateTime = 0;
-const unsigned long updateInterval = 500; // 업데이트 간격 (0.5초)
-
-/// 수신된 데이터를 저장할 버퍼
-String receivedPayload = "";
-
-void mySubCallBackHandler(char* topicName, int payloadLen, char* payLoad) {
-    Serial.print("Received topic: ");
-    Serial.println(topicName);
-    Serial.print("Partial Payload: ");
-    Serial.println(payLoad);
-
-    // 수신된 데이터를 병합
-    receivedPayload += String(payLoad);
-
-    // JSON 유효성 검사
-    if (receivedPayload.startsWith("{") && receivedPayload.endsWith("}")) {
-        msgReceived = 1; // 메시지 수신 플래그 설정
-    } else {
-        Serial.println("Payload is incomplete, waiting for the rest...");
-    }
-}
-
 
 // GPS 데이터를 JSON 형식으로 생성
 String createGPSDataJSON() {
@@ -68,6 +44,98 @@ String createGPSDataJSON() {
     }
     jsonData += "}";
     return jsonData;
+}
+
+// AWS에 주소 정보 업로드
+void uploadAddressToAWS() {
+    if (gps.location.isValid()) {
+        String gpsData = createGPSDataJSON();
+        String shadowUpdate = "{\"state\":{\"reported\":" + gpsData + "}}";
+
+        // 디버깅: 생성된 JSON 문자열 출력
+        Serial.println("Generated Shadow Update JSON:");
+        Serial.println(shadowUpdate);
+
+        // JSON 문자열 길이 확인
+        if (shadowUpdate.length() > 512) { // AWS IoT 메시지 크기 제한 고려
+            Serial.println("Error: Shadow Update JSON exceeds the size limit");
+            return;
+        }
+
+        // String 객체를 char 배열로 변환
+        char shadowUpdateChar[shadowUpdate.length() + 1];
+        shadowUpdate.toCharArray(shadowUpdateChar, shadowUpdate.length() + 1);
+
+        // AWS IoT로 전송
+        int result = awsIot.publish("$aws/things/ESP32_BIKEASSIST/shadow/update", shadowUpdateChar);
+        if (result == 0) {
+            Serial.println("AWS Shadow updated successfully with GPS data");
+        } else {
+            Serial.print("Failed to update AWS Shadow, error code: ");
+            Serial.println(result);
+        }
+    } else {
+        Serial.println("GPS location is not valid. Skipping upload.");
+    }
+}
+
+// AWS 메시지 콜백 핸들러
+void mySubCallBackHandler(char* topicName, int payloadLen, char* payLoad) {
+    Serial.print("Received topic: ");
+    Serial.println(topicName);
+    Serial.print("Partial Payload: ");
+    Serial.println(payLoad);
+
+    // 수신된 데이터를 병합
+    receivedPayload += String(payLoad);
+
+    // JSON 유효성 검사 및 데이터 처리
+    if (receivedPayload.startsWith("{") && receivedPayload.endsWith("}")) {
+        JSONVar parsed = JSON.parse(receivedPayload); // 병합된 Payload 파싱
+
+        if (JSON.typeof(parsed) == "undefined") {
+            Serial.println("JSON Parsing failed");
+            receivedPayload = ""; // 버퍼 초기화
+            return;
+        }
+
+        // "reported" 섹션에서 "speed" 값 가져오기
+        if (parsed.hasOwnProperty("state") && parsed["state"].hasOwnProperty("reported")) {
+            JSONVar reported = parsed["state"]["reported"];
+            if (reported.hasOwnProperty("speed")) {
+                awsSpeed = static_cast<float>((double)reported["speed"]);
+                Serial.print("AWS Speed updated: ");
+                Serial.println(awsSpeed);
+            }
+        }
+
+        // "desired" 섹션에서 "led" 상태 확인
+        if (parsed.hasOwnProperty("state") && parsed["state"].hasOwnProperty("desired")) {
+            JSONVar desired = parsed["state"]["desired"];
+            if (desired.hasOwnProperty("led")) {
+                String ledState = (const char*)desired["led"];
+                Serial.print("Desired LED State: ");
+                Serial.println(ledState);
+
+                // LED가 "ON"일 때 주소 정보 업로드
+                if (ledState == "ON") {
+                    uploadAddressToAWS();
+                }
+            }
+        }
+
+        // 처리 완료 후 버퍼 초기화
+        receivedPayload = "";
+    } else {
+        Serial.println("Payload is incomplete, waiting for the rest...");
+    }
+}
+
+// GPS 데이터를 읽기
+void readGPS() {
+    while (SerialGPS.available() > 0) {
+        gps.encode(SerialGPS.read());
+    }
 }
 
 // Geocoding API 호출 및 주소 가져오기
@@ -110,71 +178,10 @@ void getGeocodedAddress(float latitude, float longitude) {
     }
 }
 
-// GPS 데이터 읽기
-void readGPS() {
-    while (SerialGPS.available() > 0) {
-        gps.encode(SerialGPS.read());
-    }
-}
-
 // GPS 데이터를 주기적으로 처리
 void processGPSData() {
-    unsigned long currentTime = millis();
-    if (currentTime - lastUpdateTime >= updateInterval) {
-        lastUpdateTime = currentTime;
-
-        if (gps.location.isValid()) {
-            Serial.print("위도: ");
-            Serial.println(gps.location.lat(), 6);
-            Serial.print("경도: ");
-            Serial.println(gps.location.lng(), 6);
-
-            // Geocoding API 호출
-            getGeocodedAddress(gps.location.lat(), gps.location.lng());
-        } else {
-            Serial.println("GPS 신호를 찾을 수 없습니다.");
-            geocodedAddress = "GPS 신호 없음";
-        }
-    }
-}
-
-// AWS IoT Shadow 데이터 업데이트
-void processAWSData() {
-    if (msgReceived == 1) {
-        msgReceived = 0; // 메시지 수신 플래그 해제
-        JSONVar parsed = JSON.parse(receivedPayload); // 병합된 Payload 파싱
-
-        if (JSON.typeof(parsed) == "undefined") {
-            Serial.println("JSON Parsing failed");
-            receivedPayload = ""; // 버퍼 초기화
-            return;
-        }
-
-        // "reported" 섹션에서 "speed" 값 가져오기
-        if (parsed.hasOwnProperty("state") && parsed["state"].hasOwnProperty("reported")) {
-            JSONVar reported = parsed["state"]["reported"];
-            if (reported.hasOwnProperty("speed")) {
-                awsSpeed = static_cast<float>((double)reported["speed"]);
-                Serial.print("AWS Speed: ");
-                Serial.println(awsSpeed);
-            } else {
-                Serial.println("Speed data not found in reported section");
-            }
-        }
-
-        // "desired" 섹션에서 추가 처리 (필요한 경우)
-        if (parsed.hasOwnProperty("state") && parsed["state"].hasOwnProperty("desired")) {
-            JSONVar desired = parsed["state"]["desired"];
-            // 원하는 작업 추가 가능
-            if (desired.hasOwnProperty("led")) {
-                String ledState = (const char*)desired["led"];
-                Serial.print("Desired LED State: ");
-                Serial.println(ledState);
-            }
-        }
-
-        // 처리 완료 후 버퍼 초기화
-        receivedPayload = "";
+    if (gps.location.isValid()) {
+        getGeocodedAddress(gps.location.lat(), gps.location.lng());
     }
 }
 
@@ -241,11 +248,9 @@ void handleRoot() {
 
 // 웹 서버 JSON 데이터 제공
 void handleGPSData() {
-    processAWSData(); // AWS 데이터 업데이트
-    String json = createGPSDataJSON(); // 최신 데이터 생성
-    server.send(200, "application/json", json); // JSON 응답 반환
+    String json = createGPSDataJSON();
+    server.send(200, "application/json", json);
 }
-
 
 void setup() {
     Serial.begin(115200);
@@ -285,6 +290,5 @@ void setup() {
 void loop() {
     readGPS();
     processGPSData();
-    processAWSData(); // AWS 데이터 처리
     server.handleClient();
 }
