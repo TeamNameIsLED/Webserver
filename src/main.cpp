@@ -24,6 +24,9 @@ char rcvdPayload[1024]; // AWS IoT에서 수신한 메시지
 volatile int msgReceived = 0; // 메시지 수신 플래그
 float awsSpeed = 0.0; // AWS에서 수신한 속도 데이터
 
+unsigned long lastPrintTime = 0; // 마지막으로 유효성 상태를 출력한 시간
+const unsigned long printInterval = 1000; // 5초 간격으로 출력
+
 String geocodedAddress = ""; // 변환된 주소
 String receivedPayload = ""; // 수신된 데이터를 저장할 버퍼
 
@@ -289,6 +292,18 @@ void setup() {
 
 void loop() {
     readGPS();
-    processGPSData();
+
+    unsigned long currentTime = millis();
+    if (gps.location.isValid()) {
+        Serial.println("GPS 위치가 유효합니다.");
+        processGPSData();
+    } else {
+        // 마지막 출력 후 일정 시간이 지나면 유효하지 않은 상태 출력
+        if (currentTime - lastPrintTime >= printInterval) {
+            Serial.println("GPS 위치가 유효하지 않습니다.");
+            lastPrintTime = currentTime; // 마지막 출력 시간 갱신
+        }
+    }
+
     server.handleClient();
 }
