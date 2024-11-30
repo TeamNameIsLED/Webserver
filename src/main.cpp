@@ -25,12 +25,14 @@ char TOPIC_TELEMETRY[] = "esp32/telemetry"; // 주소, 속도 보내는 토픽
 char rcvdPayload[1024]; // AWS IoT에서 수신한 메시지
 volatile int msgReceived = 0; // 메시지 수신 플래그
 float awsSpeed = 0.0; // AWS에서 수신한 속도 데이터
+String status = "";
 
 unsigned long lastPrintTime = 0; // 마지막으로 유효성 상태를 출력한 시간
 const unsigned long printInterval = 1000; // 5초 간격으로 출력
 
 String geocodedAddress = ""; // 변환된 주소
 String receivedPayload = ""; // 수신된 데이터를 저장할 버퍼
+String latestAlert = ""; // 수신된 Alert 메시지 저장
 
 // 웹 서버
 WebServer server(80);
@@ -85,9 +87,9 @@ void uploadAddressToAWS() {
 }
 
 // AWS IoT로 텔레메트리 데이터 전송
-void sendTelemetryData(String address, float speed) {
+void sendTelemetryData(String address, float speed, String status) {
     char payload[256];
-    snprintf(payload, sizeof(payload), "{\"address\": \"%s\", \"speed\": %.2f}", address.c_str(), speed);
+    snprintf(payload, sizeof(payload), "{\"address\": \"%s\", \"speed\": %.2f, \"status\": \"%s\"}", address.c_str(), speed, status.c_str());
 
     if (awsIot.publish(TOPIC_TELEMETRY, payload) == 0) {
         Serial.println("[AWS IoT] Telemetry data sent:");
@@ -96,6 +98,7 @@ void sendTelemetryData(String address, float speed) {
         Serial.println("[AWS IoT] Failed to send telemetry data");
     }
 }
+
 
 // AWS 메시지 콜백 핸들러
 void mySubCallBackHandler(char* topicName, int payloadLen, char* payLoad) {
@@ -116,53 +119,93 @@ void mySubCallBackHandler(char* topicName, int payloadLen, char* payLoad) {
             receivedPayload = ""; // 버퍼 초기화
             return;
         }
-        //Serial.println("첫번째"+ receivedPayload);
-        // Shadow Update 처리
-            
-            // "reported" 섹션에서 "speed" 값 가져오기
-            if (parsed.hasOwnProperty("state") && parsed["state"].hasOwnProperty("reported")) {
-                JSONVar reported = parsed["state"]["reported"];
-                if (reported.hasOwnProperty("speed")) {
-                    awsSpeed = static_cast<float>((double)reported["speed"]);
-                    Serial.print("AWS Speed updated: ");
-                    Serial.println(awsSpeed);
-                }
+
+        // "reported" 섹션에서 데이터를 처리
+        if (parsed.hasOwnProperty("state") && parsed["state"].hasOwnProperty("reported")) {
+            JSONVar reported = parsed["state"]["reported"];
+
+            // "speed" 값 처리
+            if (reported.hasOwnProperty("speed")) {
+                awsSpeed = static_cast<float>((double)reported["speed"]);
+                Serial.print("AWS Speed updated: ");
+                Serial.println(awsSpeed);
             }
 
-            // "desired" 섹션에서 "led" 상태 확인
-            if (parsed.hasOwnProperty("state") && parsed["state"].hasOwnProperty("desired")) {
-                JSONVar desired = parsed["state"]["desired"];
-                if (desired.hasOwnProperty("led")) {
-                    String ledState = (const char*)desired["led"];
-                    Serial.print("Desired LED State: ");
-                    Serial.println(ledState);
+            // "status" 값 처리
+            if (reported.hasOwnProperty("status")) {
+                status = (const char*)reported["status"];
+                Serial.print("Received Status: ");
+                Serial.println(status);
 
-                    // LED가 "ON"일 때 주소 정보 업로드
-                    if (ledState == "ON") {
-                        uploadAddressToAWS();
-                    }
-                }
-            }
-        // Alerts 토픽 처리
-        else if (String(topicName) == String(TOPIC_ALERTS)) {
-            Serial.println("Alerts 메시지 수신:");
-            Serial.println(receivedPayload);
-
-            // Alert 메시지에 대한 사용자 정의 작업 수행
-            if (parsed.hasOwnProperty("alert")) {
-                String alertMessage = (const char*)parsed["alert"];
-                Serial.print("Alert 내용: ");
-                Serial.println(alertMessage);
-                // 추가 알림 처리 로직
+            } else {
+                Serial.println("No status found in the reported section.");
             }
         }
-        //Serial.println("두번째"+ receivedPayload);
+
+        // "desired" 섹션에서 "led" 상태 확인
+        if (parsed.hasOwnProperty("state") && parsed["state"].hasOwnProperty("desired")) {
+            JSONVar desired = parsed["state"]["desired"];
+            if (desired.hasOwnProperty("led")) {
+                String ledState = (const char*)desired["led"];
+                Serial.print("Desired LED State: ");
+                Serial.println(ledState);
+
+                // LED가 "ON"일 때 주소 정보 업로드
+                if (ledState == "ON") {
+                    uploadAddressToAWS();
+                }
+            }
+        }
+
+
+        if (JSON.typeof(parsed) == "object") { // JSON 객체인지 확인
+    Serial.println("Parsed JSON Object: ");
+    Serial.println(JSON.stringify(parsed)); // 파싱된 JSON 출력
+
+    // "alert"와 "description" 속성 확인
+    if (parsed.hasOwnProperty("alert") && parsed.hasOwnProperty("description")) {
+        String alertMessage = (const char*)parsed["alert"];
+        String description = (const char*)parsed["description"];
+
+        // 디버깅용 데이터 출력
+        Serial.println("Alert Message: " + alertMessage);
+        Serial.println("Description: " + description);
+
+        // JSON 생성
+        JSONVar alertJson;
+        alertJson["alert"] = alertMessage;
+        alertJson["description"] = description;
+
+        // `latestAlert`를 JSON 문자열로 저장
+        latestAlert = JSON.stringify(alertJson);
+
+        // 디버깅: 저장된 알림 데이터 출력
+        Serial.println("Updated Latest Alert:");
+        Serial.println(latestAlert);
+    } else {
+        Serial.println("Missing required properties in the payload:");
+        if (!parsed.hasOwnProperty("alert")) {
+            Serial.println("- 'alert' property is missing.");
+        }
+        if (!parsed.hasOwnProperty("description")) {
+            Serial.println("- 'description' property is missing.");
+        }
+    }
+} else {
+    Serial.println("Invalid JSON structure or type is not an object.");
+    Serial.println("Received payload:");
+    Serial.println(receivedPayload); // 디버깅용으로 원본 페이로드 출력
+}
+
+
+
         // 처리 완료 후 버퍼 초기화
         receivedPayload = "";
     } else {
         Serial.println("Payload is incomplete, waiting for the rest...");
     }
 }
+
 
 
 // GPS 데이터를 읽기
@@ -219,7 +262,7 @@ void processGPSData() {
     }
 }
 
-// HTML 페이지 제공
+// HTML 페이지에서 알림 데이터를 즉시 반영하도록 수정된 JavaScript 코드
 void handleRoot() {
     server.send(200, "text/html; charset=utf-8", R"rawliteral(
 <!DOCTYPE html>
@@ -242,6 +285,7 @@ void handleRoot() {
       });
 
       setInterval(fetchGPSData, 1000); // 1초마다 GPS 데이터 갱신
+      setInterval(fetchAlertData, 1000); // 1초마다 Alert 데이터 갱신
     }
 
     function fetchGPSData() {
@@ -251,7 +295,7 @@ void handleRoot() {
           const lat = data.latitude;
           const lng = data.longitude;
           const address = data.address;
-          const awsSpeed = data.aws_speed;
+          const awsSpeed = data.awsspeed;
 
           if (lat !== 0 && lng !== 0) {
             const newPosition = { lat, lng };
@@ -268,6 +312,32 @@ void handleRoot() {
         })
         .catch(error => console.error("Error fetching GPS data:", error));
     }
+
+    function fetchAlertData() {
+    fetch("/alerts")
+        .then(response => {
+            if (!response.ok) {
+                throw new Error("Network response was not ok");
+            }
+            return response.json(); // JSON 데이터를 파싱
+        })
+        .then(data => {
+            if (data.alert && data.alert !== "알림: 대기 중") {
+                document.getElementById("alert").innerText = `${data.alert}`;
+                document.getElementById("description").innerText = `${data.description}`;
+            } else {
+                document.getElementById("alert").innerText = "알림: 대기 중";
+                document.getElementById("description").innerText = "";
+            }
+        })
+        .catch(error => {
+            console.error("Error fetching alert data:", error);
+            document.getElementById("alert").innerText = "알림: 대기 중";
+            document.getElementById("description").innerText = "";
+        });
+}
+
+
   </script>
 </head>
 <body onload="initMap()">
@@ -275,6 +345,8 @@ void handleRoot() {
   <div id="map" style="width: 90%; height: 500px;"></div>
   <p id="coordinates">데이터 로딩 중...</p>
   <p id="address">주소 로딩 중...</p>
+  <p id="alert">알림 로딩 중...</p>
+  <p id="description"></p>
 </body>
 </html>
 )rawliteral");
@@ -285,6 +357,18 @@ void handleGPSData() {
     String json = createGPSDataJSON();
     server.send(200, "application/json", json);
 }
+
+void handleAlerts() {
+    if (latestAlert.isEmpty()) {
+        // 기본값으로 "알림: 대기 중" 메시지를 반환
+        server.send(200, "application/json", "{\"alert\": \"알림: 대기 중\", \"description\": \"\"}");
+    } else {
+        // 최신 Alert 데이터를 반환
+        server.send(200, "application/json", latestAlert);
+    }
+}
+
+
 
 void setup() {
     Serial.begin(115200);
@@ -327,6 +411,8 @@ void setup() {
 
     server.on("/", handleRoot);
     server.on("/gps-data", handleGPSData);
+    server.on("/alerts", handleAlerts);
+
     server.begin();
     Serial.println("HTTP 서버 시작");
 }
@@ -347,9 +433,8 @@ void loop() {
 
     // 페이로드에서 받은 속도와 주소로 Telemetry 데이터 송신
     if (!geocodedAddress.isEmpty()) {
-        sendTelemetryData(geocodedAddress, awsSpeed); // AWS에서 받은 속도 활용
+        sendTelemetryData(geocodedAddress, awsSpeed, status); // AWS에서 받은 속도 활용
     }
 
     server.handleClient();  // 웹 서버 클라이언트 처리
 }
-
