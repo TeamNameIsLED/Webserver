@@ -7,8 +7,8 @@
 #include <AWS_IOT.h>
 
 // Wi-Fi 설정
-const char* ssid = "KIMBO";
-const char* password = "03011777";
+const char* ssid = "MJS-Guest";
+const char* password = "00908764801015";
 
 // GPS 설정
 TinyGPSPlus gps;
@@ -28,7 +28,7 @@ float awsSpeed = 0.0; // AWS에서 수신한 속도 데이터
 String status = "";
 
 unsigned long lastPrintTime = 0; // 마지막으로 유효성 상태를 출력한 시간
-const unsigned long printInterval = 1000; // 5초 간격으로 출력
+const unsigned long printInterval = 500; // .5초 간격으로 출력
 
 String geocodedAddress = ""; // 변환된 주소
 String receivedPayload = ""; // 수신된 데이터를 저장할 버퍼
@@ -159,49 +159,50 @@ void mySubCallBackHandler(char* topicName, int payloadLen, char* payLoad) {
 
 
         if (JSON.typeof(parsed) == "object") { // JSON 객체인지 확인
-    Serial.println("Parsed JSON Object: ");
-    Serial.println(JSON.stringify(parsed)); // 파싱된 JSON 출력
+            Serial.println("Parsed JSON Object: ");
+            Serial.println(JSON.stringify(parsed)); // 파싱된 JSON 출력
 
-    // "alert"와 "description" 속성 확인
-    if (parsed.hasOwnProperty("alert") && parsed.hasOwnProperty("description")) {
-        String alertMessage = (const char*)parsed["alert"];
-        String description = (const char*)parsed["description"];
+            // "alert"와 "description" 속성 확인
+            if (parsed.hasOwnProperty("alert") && parsed.hasOwnProperty("description")) {
+                String alertMessage = (const char*)parsed["alert"];
+                String description = (const char*)parsed["description"];
 
-        // 디버깅용 데이터 출력
-        Serial.println("Alert Message: " + alertMessage);
-        Serial.println("Description: " + description);
+                // 디버깅용 데이터 출력
+                Serial.println("Alert Message: " + alertMessage);
+                Serial.println("Description: " + description);
 
-        // JSON 생성
-        JSONVar alertJson;
-        alertJson["alert"] = alertMessage;
-        alertJson["description"] = description;
+                // JSON 생성
+                JSONVar alertJson;
+                alertJson["alert"] = alertMessage;
+                alertJson["description"] = description;
 
-        // `latestAlert`를 JSON 문자열로 저장
-        latestAlert = JSON.stringify(alertJson);
+                // `latestAlert`를 JSON 문자열로 저장
+                latestAlert = JSON.stringify(alertJson);
 
-        // 디버깅: 저장된 알림 데이터 출력
-        Serial.println("Updated Latest Alert:");
-        Serial.println(latestAlert);
-    } else {
-        Serial.println("Missing required properties in the payload:");
-        if (!parsed.hasOwnProperty("alert")) {
-            Serial.println("- 'alert' property is missing.");
+                // 디버깅: 저장된 알림 데이터 출력
+                Serial.println("Updated Latest Alert:");
+                Serial.println(latestAlert);
+            }
+            else {
+                Serial.println("Missing required properties in the payload:");
+                if (!parsed.hasOwnProperty("alert")) {
+                    Serial.println("- 'alert' property is missing.");
+                }
+                if (!parsed.hasOwnProperty("description")) {
+                    Serial.println("- 'description' property is missing.");
+                }
+            }
         }
-        if (!parsed.hasOwnProperty("description")) {
-            Serial.println("- 'description' property is missing.");
+        else {
+            Serial.println("Invalid JSON structure or type is not an object.");
+            Serial.println("Received payload:");
+            Serial.println(receivedPayload); // 디버깅용으로 원본 페이로드 출력
         }
-    }
-} else {
-    Serial.println("Invalid JSON structure or type is not an object.");
-    Serial.println("Received payload:");
-    Serial.println(receivedPayload); // 디버깅용으로 원본 페이로드 출력
-}
-
-
 
         // 처리 완료 후 버퍼 초기화
         receivedPayload = "";
-    } else {
+    }
+    else {
         Serial.println("Payload is incomplete, waiting for the rest...");
     }
 }
@@ -262,13 +263,62 @@ void processGPSData() {
     }
 }
 
-// HTML 페이지에서 알림 데이터를 즉시 반영하도록 수정된 JavaScript 코드
+// HTML 페이지 JavaScript 코드
 void handleRoot() {
     server.send(200, "text/html; charset=utf-8", R"rawliteral(
 <!DOCTYPE html>
-<html>
+<html lang="ko">
 <head>
-  <title>ESP32 Tracker</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ESP32 GPS & AWS Tracker</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      background-color: #f4f4f4;
+      color: #333;
+    }
+    header {
+      background-color: #0078d4;
+      color: white;
+      padding: 10px 20px;
+      text-align: center;
+    }
+    main {
+      max-width: 800px;
+      margin: 20px auto;
+      padding: 20px;
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    }
+    h1 {
+      margin-bottom: 10px;
+    }
+    #map {
+      width: 100%;
+      height: 400px;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+    }
+    .info {
+      margin: 15px 0;
+      padding: 10px;
+      background: #f9f9f9;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+    }
+    .info p {
+      margin: 5px 0;
+    }
+    footer {
+      text-align: center;
+      margin-top: 20px;
+      color: #666;
+    }
+  </style>
   <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDzSZz4EGR_CwxQ5Aa7ncwv85MrQmW_gkI"></script>
   <script>
     let map, marker;
@@ -284,69 +334,71 @@ void handleRoot() {
         map: map
       });
 
-      setInterval(fetchGPSData, 1000); // 1초마다 GPS 데이터 갱신
-      setInterval(fetchAlertData, 1000); // 1초마다 Alert 데이터 갱신
+      setInterval(fetchGPSData, 800);
+      setInterval(fetchAlertData, 800);
     }
 
     function fetchGPSData() {
       fetch("/gps-data")
         .then(response => response.json())
         .then(data => {
-          const lat = data.latitude;
-          const lng = data.longitude;
-          const address = data.address;
-          const awsSpeed = data.awsspeed;
+          const { latitude, longitude, address, aws_speed } = data;
 
-          if (lat !== 0 && lng !== 0) {
-            const newPosition = { lat, lng };
+          if (latitude !== 0 && longitude !== 0) {
+            const newPosition = { lat: latitude, lng: longitude };
             marker.setPosition(newPosition);
             map.setCenter(newPosition);
+
             document.getElementById("coordinates").innerText =
-              `위도: ${lat}, 경도: ${lng}, AWS 속도: ${awsSpeed} km/h`;
+              `위도: ${latitude.toFixed(6)}, 경도: ${longitude.toFixed(6)}`;
             document.getElementById("address").innerText = `주소: ${address}`;
+            document.getElementById("aws-speed").innerText = `속도: ${aws_speed.toFixed(2)} km/h`;
           } else {
-            document.getElementById("coordinates").innerText =
-              "GPS 데이터를 가져올 수 없습니다.";
+            document.getElementById("coordinates").innerText = "GPS 데이터 불러오는중...";
             document.getElementById("address").innerText = "주소 없음";
+            document.getElementById("aws-speed").innerText = "";
           }
         })
         .catch(error => console.error("Error fetching GPS data:", error));
     }
 
     function fetchAlertData() {
-    fetch("/alerts")
-        .then(response => {
-            if (!response.ok) {
-                throw new Error("Network response was not ok");
-            }
-            return response.json(); // JSON 데이터를 파싱
-        })
+      fetch("/alerts")
+        .then(response => response.json())
         .then(data => {
-            if (data.alert && data.alert !== "알림: 대기 중") {
-                document.getElementById("alert").innerText = `${data.alert}`;
-                document.getElementById("description").innerText = `${data.description}`;
-            } else {
-                document.getElementById("alert").innerText = "알림: 대기 중";
-                document.getElementById("description").innerText = "";
-            }
+          const alert = data.alert || "알림: 대기 중";
+          const description = data.description || "";
+
+          document.getElementById("alert").innerText = `${alert}`;
+          document.getElementById("description").innerText = `${description}`;
         })
         .catch(error => {
-            console.error("Error fetching alert data:", error);
-            document.getElementById("alert").innerText = "알림: 대기 중";
-            document.getElementById("description").innerText = "";
+          console.error("Error fetching alert data:", error);
+          document.getElementById("alert").innerText = "알림: 대기 중";
+          document.getElementById("description").innerText = "";
         });
-}
-
-
+    }
   </script>
 </head>
 <body onload="initMap()">
-  <h1>ESP32 GPS & AWS Tracker</h1>
-  <div id="map" style="width: 90%; height: 500px;"></div>
-  <p id="coordinates">데이터 로딩 중...</p>
-  <p id="address">주소 로딩 중...</p>
-  <p id="alert">알림 로딩 중...</p>
-  <p id="description"></p>
+  <header>
+    <h1>조명은 LED,<br>LED로 밝히는 어린이 안전!</h1>
+  </header>
+  <main>
+    <div id="map"></div>
+    <div class="info">
+      <p id="coordinates">위도, 경도 로딩 중...</p>
+      <p id="address">주소 로딩 중...</p>
+      <p id="aws-speed">속도 로딩 중...</p>
+    </div>
+    <div class="info">
+      <p id="alert">알림 로딩 중...</p>
+      <p id="description"></p>
+    </div>
+  </main>
+  <footer>
+    <p>&copy; 2024 TeamNameIsLED</p>
+  </footer>
 </body>
 </html>
 )rawliteral");
