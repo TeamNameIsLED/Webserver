@@ -17,7 +17,7 @@ HardwareSerial SerialGPS(1); // UART1 사용 (RX=GPIO16, TX=GPIO17)
 // AWS IoT 설정
 AWS_IOT awsIot;
 char HOST_ADDRESS[] = "a3pecuomf1y0cd-ats.iot.ap-northeast-2.amazonaws.com";
-char CLIENT_ID[] = "WebServerDevice";
+char CLIENT_ID[] = "WebServerDevicea";
 char SHADOW_UPDATE_DOCUMENTS_TOPIC[] = "$aws/things/ESP32_BIKEASSIST/shadow/update/accepted";
 char TOPIC_ALERTS[] = "esp32/alerts"; // 알림 받는 토픽
 char TOPIC_TELEMETRY[] = "esp32/telemetry"; // 주소, 속도 보내는 토픽 
@@ -26,6 +26,10 @@ char rcvdPayload[1024]; // AWS IoT에서 수신한 메시지
 volatile int msgReceived = 0; // 메시지 수신 플래그
 float awsSpeed = 0.0; // AWS에서 수신한 속도 데이터
 String status = "";
+String alertMessage = ""; // 전역 변수로 alert 메시지 저장
+
+unsigned long buzzerStartTime = 0;  // 부저 시작 시간
+bool isBuzzerOn = false;  // 부저 상태
 
 unsigned long lastPrintTime = 0; // 마지막으로 유효성 상태를 출력한 시간
 const unsigned long printInterval = 500; // .5초 간격으로 출력
@@ -33,6 +37,9 @@ const unsigned long printInterval = 500; // .5초 간격으로 출력
 String geocodedAddress = ""; // 변환된 주소
 String receivedPayload = ""; // 수신된 데이터를 저장할 버퍼
 String latestAlert = ""; // 수신된 Alert 메시지 저장
+
+// 부저 설정
+#define BUZZER_PIN 23
 
 // 웹 서버
 WebServer server(80);
@@ -170,6 +177,14 @@ void mySubCallBackHandler(char* topicName, int payloadLen, char* payLoad) {
                 // 디버깅용 데이터 출력
                 Serial.println("Alert Message: " + alertMessage);
                 Serial.println("Description: " + description);
+
+                // 부저를 울려야 하는 상황인지 확인
+                if (alertMessage == "주의: 이 지역은 사고 위험이 높은 구간입니다!" && !isBuzzerOn) {
+                    Serial.println("Alert detected, activating buzzer...");
+                    digitalWrite(BUZZER_PIN, HIGH); // 부저 ON
+                    buzzerStartTime = millis();  // 현재 시간 저장
+                    isBuzzerOn = true;  // 부저가 켜졌음을 기록
+                }
 
                 // JSON 생성
                 JSONVar alertJson;
@@ -425,11 +440,14 @@ void handleAlerts() {
 void setup() {
     Serial.begin(115200);
     SerialGPS.begin(9600, SERIAL_8N1, 16, 17);
-
+    
     WiFi.disconnect(true);
     delay(1000);
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid, password);
+
+    pinMode(BUZZER_PIN, OUTPUT); // 부저 핀을 출력 모드로 설정
+    digitalWrite(BUZZER_PIN, LOW);  // 초기에는 부저 OFF
 
     while (WiFi.status() != WL_CONNECTED) {
         delay(1000);
@@ -481,6 +499,13 @@ void loop() {
             Serial.println("GPS 위치가 유효하지 않습니다.");
             lastPrintTime = currentTime; // 마지막 출력 시간 갱신
         }
+    }
+
+    // 부저가 켜진 후 일정 시간이 지나면 부저 끄기
+    if (isBuzzerOn && (millis() - buzzerStartTime >= 3000)) {  // 3초 동안 부저를 울림
+        digitalWrite(BUZZER_PIN, LOW);  // 부저 OFF
+        Serial.println("Buzzer turned off after 3 seconds.");
+        isBuzzerOn = false;  // 부저가 꺼졌음을 기록
     }
 
     // 페이로드에서 받은 속도와 주소로 Telemetry 데이터 송신
